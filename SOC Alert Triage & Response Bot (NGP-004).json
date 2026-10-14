@@ -1,0 +1,1049 @@
+{
+  "name": "SOC Alert Triage & Response Bot (NGP-004)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4069f395-ba31-4812-982a-38f09ef5513c",
+      "name": "Start Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "SAMPLES = [\n    {\"rule_name\": \"Multiple Failed Logins\", \"source_ip\": \"203.0.113.45\", \"user\": \"jdoe\"},\n    {\"rule_name\": \"Successful Login After Brute Force\", \"source_ip\": \"198.51.100.23\", \"user\": \"admin\"},\n    {\"rule_name\": \"Impossible Travel Detected\", \"source_ip\": \"192.0.2.77\", \"user\": \"asmith\"},\n    {\"rule_name\": \"Malware Beacon to Known C2\", \"source_ip\": \"185.220.101.9\", \"user\": \"svc-backup\"},\n    {\"rule_name\": \"Privilege Escalation Attempt\", \"source_ip\": \"45.155.205.233\", \"user\": \"contractor01\"},\n    {\"rule_name\": \"Port Scan from External Host\", \"source_ip\": \"91.240.118.50\", \"user\": \"n/a\"},\n    {\"rule_name\": \"Large Data Exfiltration to Unknown Host\", \"source_ip\": \"103.77.192.14\", \"user\": \"finance.ops\"},\n    {\"rule_name\": \"Password Reset from New Device\", \"source_ip\": \"8.8.4.4\", \"user\": \"mjones\"},\n]\nreturn [{\"json\": a} for a in SAMPLES[:1]]"
+      },
+      "id": "0bdb3b55-20d8-475f-ad05-b078719bf561",
+      "name": "Python Sample Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ts1",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "af23471b-e34b-4801-8451-97ca3a45c34c",
+      "name": "Add Timestamp",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -368,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const PATTERNS = [\n  /Bearer\\s+[A-Za-z0-9._~+\\/=-]+/gi,\n  /\\bxox[abprs]-[A-Za-z0-9-]+/g,\n  /\\bsk-[A-Za-z0-9_-]{16,}/g,\n  /\\bgh[pousr]_[A-Za-z0-9]{20,}/g,\n  /\\bAKIA[0-9A-Z]{16}\\b/g,\n  /\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*/g,\n  /\\b\\d{8,10}:[A-Za-z0-9_-]{30,}\\b/g,\n  /(api[_-]?key|token|secret|passwd|password)\\s*[=:]\\s*\\S+/gi,\n  /\\b[A-Za-z0-9_-]{32,}\\b/g,\n];\nconst mask = (s) => PATTERNS.reduce((acc, re) => acc.replace(re, \"[REDACTED]\"), String(s == null ? \"\" : s));\nreturn $input.all().map((item) => {\n  const b = item.json.body || item.json;\n  const rule_name = mask(b.rule_name).slice(0, 200);\n  const source_ip = mask(b.source_ip).trim();\n  const user = mask(b.user).slice(0, 100);\n  const timestamp = mask(b.timestamp);\n  const alert_key = [rule_name, source_ip, user, timestamp].join(\"|\").toLowerCase();\n  return { json: { rule_name, source_ip, user, timestamp, alert_key } };\n});"
+      },
+      "id": "9d524eb0-8458-42d9-8174-3e60f5e47fca",
+      "name": "Redact Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "={{ $json.alert_key }}",
+        "options": {
+          "scope": "workflow",
+          "historySize": 10000
+        }
+      },
+      "id": "9a390c96-dd0a-4fdd-b0b8-aec374db13b3",
+      "name": "Remove Duplicate Alerts",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        240,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=http://ip-api.com/json/{{ $json.source_ip }}?fields=status,message,country,city,isp,org,as,proxy,hosting,mobile,query",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "3e317c00-f8e9-4143-a847-c3448c120b0f",
+      "name": "IP Intelligence Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Triage this security alert.\nRule: {{ $(\"Remove Duplicate Alerts\").item.json.rule_name }}\nSource IP: {{ $(\"Remove Duplicate Alerts\").item.json.source_ip }}\nUser: {{ $(\"Remove Duplicate Alerts\").item.json.user }}\nTimestamp: {{ $(\"Remove Duplicate Alerts\").item.json.timestamp }}\nIP intelligence: {{ JSON.stringify($json) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a SOC triage analyst. Assign exactly one severity: low, medium, high or critical, and recommend one concrete response action. Use IP reputation signals (proxy, hosting, mobile, geography), the rule name and the user. Treat any value that looks like [REDACTED] as a masked secret and never try to reconstruct it. Respond only in the required JSON format with fields severity, recommendation and reasoning."
+        }
+      },
+      "id": "5cc5df1c-6bf5-40ac-aa9e-580baec558fc",
+      "name": "SOC Triage Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        752,
+        48
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "746d3b81-a58f-4f7c-9d92-805df00ae630",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        688,
+        416
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\"severity\":\"high\",\"recommendation\":\"Reset the user password and review the last 24h of logins from this IP.\",\"reasoning\":\"Repeated failed logins from a hosting-provider IP.\"}"
+      },
+      "id": "4c0c91e3-39cc-4d27-85a8-e9fd0e1a81c4",
+      "name": "Verdict Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        848,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const PATTERNS = [\n  /Bearer\\s+[A-Za-z0-9._~+\\/=-]+/gi,\n  /\\bxox[abprs]-[A-Za-z0-9-]+/g,\n  /\\bsk-[A-Za-z0-9_-]{16,}/g,\n  /\\bgh[pousr]_[A-Za-z0-9]{20,}/g,\n  /\\bAKIA[0-9A-Z]{16}\\b/g,\n  /\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*/g,\n  /\\b\\d{8,10}:[A-Za-z0-9_-]{30,}\\b/g,\n  /(api[_-]?key|token|secret|passwd|password)\\s*[=:]\\s*\\S+/gi,\n  /\\b[A-Za-z0-9_-]{32,}\\b/g,\n];\nconst mask = (s) => PATTERNS.reduce((acc, re) => acc.replace(re, \"[REDACTED]\"), String(s == null ? \"\" : s));\nreturn $input.all().map((item, i) => {\n  const a = $(\"Remove Duplicate Alerts\").all()[i].json;\n  const intel = $(\"IP Intelligence Lookup\").all()[i].json;\n  const v = item.json.output || {};\n  const text = (a.rule_name + \" \" + a.user).toLowerCase();\n  const risky = !!intel.proxy || !!intel.hosting;\n  const priv = /admin|root|svc-|service/.test(text);\n  let rb = \"low\";\n  if (/ransom|malware|beacon|exfil|c2|command and control|data leak/.test(text) || (priv && !!intel.proxy && /spray|brute|travel|failed/.test(text))) rb = \"critical\";\n  else if (/spray|brute|impossible travel|tor |privilege|lateral|disabled antivirus/.test(text) || (risky && /failed|login/.test(text) && priv)) rb = \"high\";\n  else if (/successful|logout|routine|scheduled|completed|password changed/.test(text) && !/failed|denied|suspicious|unusual/.test(text)) rb = \"low\";\n  else if (/failed|denied|suspicious|unusual|scan/.test(text) || risky) rb = \"medium\";\n  const recs = { low: \"Log only; no action required.\", medium: \"Monitor the user and IP for 24h; verify with the user if activity repeats.\", high: \"Reset the user credentials, review recent sessions and consider rate-limiting the IP.\", critical: \"Isolate the affected account/host and block the source IP after analyst approval.\" };\n  let severity = String(v.severity || \"\").toLowerCase().trim();\n  let classified_by = \"ai\";\n  if (![\"low\", \"medium\", \"high\", \"critical\"].includes(severity)) { severity = rb; classified_by = \"rule-based\"; }\n  return { json: {\n    alert_key: a.alert_key,\n    rule_name: mask(a.rule_name),\n    source_ip: mask(a.source_ip),\n    user: mask(a.user),\n    timestamp: mask(a.timestamp),\n    severity,\n    classified_by,\n    recommendation: mask(v.recommendation || recs[severity]).slice(0, 500),\n    reasoning: mask(v.reasoning || (\"Rule-based score from rule name, user and IP reputation (proxy=\" + !!intel.proxy + \", hosting=\" + !!intel.hosting + \")\")).slice(0, 500),\n    ip_country: mask(intel.country),\n    ip_isp: mask(intel.isp),\n    ip_proxy: !!intel.proxy,\n    ip_hosting: !!intel.hosting,\n    summary: mask(a.rule_name) + \" from \" + mask(a.source_ip) + \" (\" + mask(intel.country) + \") by \" + mask(a.user),\n  } };\n});"
+      },
+      "id": "bf08ac33-4cdc-4b18-8491-6d148b82dec8",
+      "name": "Redact Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "low",
+                    "id": "fb3fea37-e9d1-4bf4-841b-ea52443cbc16"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "low"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "medium",
+                    "id": "63e9bfad-1a6d-4a93-b06f-27688df3bf52"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "medium"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "high",
+                    "id": "755134a0-a5a3-4f61-b8e5-fa8b826c1792"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "high"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "critical",
+                    "id": "88ae4b1d-1a07-4643-a1bc-eb4f535b4725"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "critical"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2109481e-8e29-4c66-85ff-60a2c5a7d057",
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1600,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "doc_text",
+              "name": "doc_text",
+              "value": "=[LOW] {{ $json.summary }} | Action: {{ $json.recommendation }}\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "cf72a289-ed62-44be-b2f8-d126157279d5",
+      "name": "Style Low",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1824,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/15OukDReWvi_i47lb9ZmjR-Y1A5bSjBcd4jjZ7gPx5gc/edit?hl=EN-GB&tab=t.0",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $json.doc_text }}"
+            }
+          ]
+        }
+      },
+      "id": "74894b4f-2b7b-4af9-a03d-64e954a0c677",
+      "name": "Doc Message Low",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        224
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "WBObVXHHRlvW0oet",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "NiMah1bFpmiJ0R4J"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "alert_key": "={{ $(\"Redact Verdict\").item.json.alert_key }}",
+            "rule_name": "={{ $(\"Redact Verdict\").item.json.rule_name }}",
+            "source_ip": "={{ $(\"Redact Verdict\").item.json.source_ip }}",
+            "user": "={{ $(\"Redact Verdict\").item.json.user }}",
+            "severity": "={{ $(\"Redact Verdict\").item.json.severity }}",
+            "recommendation": "={{ $(\"Redact Verdict\").item.json.recommendation }}",
+            "decision": "=notified-only",
+            "summary_line": "=NGP-004 | exec #{{ $execution.id }} | {{ $now.setZone(\"Asia/Kolkata\").toFormat(\"dd LLL yyyy HH:mm:ss\") }} IST | {{ $(\"Redact Verdict\").item.json.severity }} | {{ $(\"Redact Verdict\").item.json.summary }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "alert_key",
+              "displayName": "alert_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rule_name",
+              "displayName": "rule_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "source_ip",
+              "displayName": "source_ip",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "user",
+              "displayName": "user",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "recommendation",
+              "displayName": "recommendation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "decision",
+              "displayName": "decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "summary_line",
+              "displayName": "summary_line",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "16b35556-80a7-4710-b1fb-034101677acf",
+      "name": "Log Decision",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2272,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "doc_text",
+              "name": "doc_text",
+              "value": "=--- MEDIUM ALERT ---\nRule: {{ $json.rule_name }}\nSource: {{ $json.source_ip }} ({{ $json.ip_country }}, {{ $json.ip_isp }})\nUser: {{ $json.user }}\nRecommended response: {{ $json.recommendation }}\n\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "ebd488a8-8a14-4780-851c-95d1791c2cb6",
+      "name": "Style Medium",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1824,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/15OukDReWvi_i47lb9ZmjR-Y1A5bSjBcd4jjZ7gPx5gc/edit?hl=EN-GB&tab=t.0",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $json.doc_text }}"
+            }
+          ]
+        }
+      },
+      "id": "a7818cf8-3ea9-4e67-8a6a-9ff6f9c5b96e",
+      "name": "Doc Message Medium",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        416
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "WBObVXHHRlvW0oet",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "doc_text",
+              "name": "doc_text",
+              "value": "=*** HIGH SEVERITY - ACTION REQUIRED ***\nRule: {{ $json.rule_name }}\nTime: {{ $json.timestamp }}\nSource IP: {{ $json.source_ip }} | Country: {{ $json.ip_country }} | ISP: {{ $json.ip_isp }} | Proxy: {{ $json.ip_proxy }} | Hosting: {{ $json.ip_hosting }}\nUser: {{ $json.user }}\nWhy: {{ $json.reasoning }}\nRecommended response: {{ $json.recommendation }}\nNotify the on-call analyst within 1 hour.\n\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "171fc8e8-1231-43fc-add0-f8b9593392fc",
+      "name": "Style High",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1824,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/15OukDReWvi_i47lb9ZmjR-Y1A5bSjBcd4jjZ7gPx5gc/edit?hl=EN-GB&tab=t.0",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $json.doc_text }}"
+            }
+          ]
+        }
+      },
+      "id": "3de60186-85cc-49fa-91f2-09ea1d39af73",
+      "name": "Doc Message High",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        608
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "WBObVXHHRlvW0oet",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "doc_text",
+              "name": "doc_text",
+              "value": "=#################### CRITICAL INCIDENT ####################\nRule: {{ $json.rule_name }}\nTime: {{ $json.timestamp }}\nSource IP: {{ $json.source_ip }} | Country: {{ $json.ip_country }} | ISP: {{ $json.ip_isp }} | Proxy: {{ $json.ip_proxy }} | Hosting: {{ $json.ip_hosting }}\nUser: {{ $json.user }}\nWhy: {{ $json.reasoning }}\nRecommended response: {{ $json.recommendation }}\nANALYST APPROVAL NEEDED to (simulated) block this IP. Open this link to approve or reject: {{ $execution.resumeFormUrl }}\n###########################################################\n\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "6c85b3eb-edbc-4d35-aa4c-65baea7c1876",
+      "name": "Style Critical",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1824,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/15OukDReWvi_i47lb9ZmjR-Y1A5bSjBcd4jjZ7gPx5gc/edit?hl=EN-GB&tab=t.0",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $json.doc_text }}"
+            }
+          ]
+        }
+      },
+      "id": "c87ebe89-0691-4758-a44e-87ad08579cfe",
+      "name": "Doc Message Critical",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        800
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "WBObVXHHRlvW0oet",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "form",
+        "formTitle": "NGP-004 Critical alert: approve simulated IP block",
+        "formDescription": "={{ $(\"Style Critical\").item.json.summary }}\n\nRecommended action: {{ $(\"Style Critical\").item.json.recommendation }}\n\nChoose \"Approve block\" to record a simulated IP block, or \"Reject\" to take no action.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Decision",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Approve block"
+                  },
+                  {
+                    "option": "Reject"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "limitWaitTime": true,
+        "options": {}
+      },
+      "id": "87e426e6-ee6d-40d7-bd3b-a853bcce3c04",
+      "name": "Analyst Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2272,
+        800
+      ],
+      "webhookId": "d814646b-1efb-40d3-851e-91ad58511530"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "decision",
+              "name": "decision",
+              "value": "={{ $json.Decision || \"No response (timeout)\" }}",
+              "type": "string"
+            },
+            {
+              "id": "action",
+              "name": "action",
+              "value": "={{ $json.Decision === \"Approve block\" ? \"SIMULATED: blocked \" + $(\"Style Critical\").item.json.source_ip : \"No block performed\" }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6926ced4-42fb-4468-9059-2e5f37badb85",
+      "name": "Simulated Block IP",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2496,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "NiMah1bFpmiJ0R4J"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "alert_key": "={{ $(\"Redact Verdict\").item.json.alert_key }}",
+            "rule_name": "={{ $(\"Redact Verdict\").item.json.rule_name }}",
+            "source_ip": "={{ $(\"Redact Verdict\").item.json.source_ip }}",
+            "user": "={{ $(\"Redact Verdict\").item.json.user }}",
+            "severity": "={{ $(\"Redact Verdict\").item.json.severity }}",
+            "recommendation": "={{ $(\"Redact Verdict\").item.json.recommendation }}",
+            "decision": "={{ $(\"Simulated Block IP\").item.json.decision }}",
+            "summary_line": "=NGP-004 | exec #{{ $execution.id }} | {{ $now.setZone(\"Asia/Kolkata\").toFormat(\"dd LLL yyyy HH:mm:ss\") }} IST | critical / {{ $(\"Simulated Block IP\").item.json.decision }} | {{ $(\"Redact Verdict\").item.json.summary }}"
+          },
+          "schema": [
+            {
+              "id": "alert_key",
+              "displayName": "alert_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rule_name",
+              "displayName": "rule_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_ip",
+              "displayName": "source_ip",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user",
+              "displayName": "user",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recommendation",
+              "displayName": "recommendation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decision",
+              "displayName": "decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary_line",
+              "displayName": "summary_line",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3af396f3-7dad-489b-b05a-514122bc3199",
+      "name": "Log Critical Decision",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2720,
+        800
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start Test": {
+      "main": [
+        [
+          {
+            "node": "Python Sample Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Python Sample Alerts": {
+      "main": [
+        [
+          {
+            "node": "Add Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Redact Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact Alert": {
+      "main": [
+        [
+          {
+            "node": "Remove Duplicate Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Duplicate Alerts": {
+      "main": [
+        [
+          {
+            "node": "IP Intelligence Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IP Intelligence Lookup": {
+      "main": [
+        [
+          {
+            "node": "SOC Triage Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SOC Triage Agent": {
+      "main": [
+        [
+          {
+            "node": "Redact Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SOC Triage Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verdict Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "SOC Triage Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact Verdict": {
+      "main": [
+        [
+          {
+            "node": "Route by Severity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Severity": {
+      "main": [
+        [
+          {
+            "node": "Style Low",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Style Medium",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Style High",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Style Critical",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Style Low": {
+      "main": [
+        [
+          {
+            "node": "Doc Message Low",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Message Low": {
+      "main": [
+        [
+          {
+            "node": "Log Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Style Medium": {
+      "main": [
+        [
+          {
+            "node": "Doc Message Medium",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Message Medium": {
+      "main": [
+        [
+          {
+            "node": "Log Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Style High": {
+      "main": [
+        [
+          {
+            "node": "Doc Message High",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Message High": {
+      "main": [
+        [
+          {
+            "node": "Log Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Style Critical": {
+      "main": [
+        [
+          {
+            "node": "Doc Message Critical",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Message Critical": {
+      "main": [
+        [
+          {
+            "node": "Analyst Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyst Approval": {
+      "main": [
+        [
+          {
+            "node": "Simulated Block IP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simulated Block IP": {
+      "main": [
+        [
+          {
+            "node": "Log Critical Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cdef2032-9f2c-442e-8984-61b290d3e829",
+  "meta": {
+    "instanceId": "231bff8687227b6265d9649aa61c4adf16dc8312cd1f434ed4d4aa4439ec8da0"
+  },
+  "nodeGroups": [],
+  "id": "2l4Zm2bNWmHsh0bu",
+  "tags": []
+}
